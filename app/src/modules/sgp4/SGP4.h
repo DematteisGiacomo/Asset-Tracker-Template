@@ -1,9 +1,12 @@
+<<<<<<< HEAD
 /*
  * Copyright (c) 2026 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Unlicense
  */
 
+=======
+>>>>>>> 46e57a1 (ntn: add leo usecase)
 #ifndef __sgp4header__
 #define __sgp4header__
 
@@ -283,6 +286,10 @@ double gstime(double jdut1);
 
 void jday(int year, int mon, int day, int hr, int minute, double sec, double *jd, double *jdfrac);
 
+<<<<<<< HEAD
 void twoline2rv(const char* longstr1, const char* longstr2, char typerun, char typeinput, char opsmode, int whichconst, ElsetRec* satrec);
+=======
+void twoline2rv(char* longstr1, char* longstr2, char typerun, char typeinput, char opsmode, int whichconst, ElsetRec* satrec);
+>>>>>>> 46e57a1 (ntn: add leo usecase)
 
 #endif

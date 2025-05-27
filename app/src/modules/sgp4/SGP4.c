@@ -2135,3 +2135,7 @@
         satrec->whichconst = whichconst;
         sgp4init(opsmode, satrec);
     }
+<<<<<<< HEAD
+=======
+
+>>>>>>> 46e57a1 (ntn: add leo usecase)
