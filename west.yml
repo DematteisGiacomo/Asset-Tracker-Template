@@ -9,10 +9,12 @@ manifest:
   remotes:
     - name: ncs
       url-base: https://github.com/nrfconnect
+    - name: ntn-fork-nrf-sdk
+      url-base: https://github.com/DematteisGiacomo
 
   projects:
     - name: nrf
-      remote: ncs
+      remote: ntn-fork-nrf-sdk
       repo-path: sdk-nrf
-      revision: 810b478aacde5d612130c32c9f0be52ca49aee2a
+      revision: ntn_gnss_usecase
       import: true
