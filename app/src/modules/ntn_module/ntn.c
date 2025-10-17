@@ -13,6 +13,7 @@
 #include <modem/nrf_modem_lib.h>
 #include <nrf_modem_at.h>
 #include <nrf_modem_gnss.h>
+#include <modem/modem_info.h>
 #include <zephyr/task_wdt/task_wdt.h>
 #include <zephyr/net/socket.h>
 #include <errno.h>
@@ -428,12 +429,55 @@ static int sock_send_gnss_data(const struct nrf_modem_gnss_pvt_data_frame *gnss_
 		return -ENOTCONN;
 	}
 
+#if defined(CONFIG_APP_NTN_THINGY_ROCKS_ENDPOINT)
+	char rsrp[16] = {0}, band[16] = {0}, ue_mode[16] = {0}, oper[16] = {0}, imei[16] = {0};
+	char temp[16] = {0};
+
+	err = modem_info_string_get(MODEM_INFO_IMEI, imei, sizeof(imei));
+	if (err < 0) {
+			snprintf(imei, sizeof(imei), "N/A");
+		}
+	err = modem_info_string_get(MODEM_INFO_RSRP, rsrp, sizeof(rsrp));
+	if (err < 0) {
+		snprintf(rsrp, sizeof(rsrp), "N/A");
+	}
+	err = modem_info_string_get(MODEM_INFO_CUR_BAND, band, sizeof(band));
+	if (err < 0) {
+		snprintf(band, sizeof(band), "N/A");
+	}
+	err = modem_info_string_get(MODEM_INFO_UE_MODE, ue_mode, sizeof(ue_mode));
+	if (err < 0) {
+		snprintf(ue_mode, sizeof(ue_mode), "N/A");
+	}
+	err = modem_info_string_get(MODEM_INFO_OPERATOR, oper, sizeof(oper));
+	if (err < 0) {
+		snprintf(oper, sizeof(oper), "N/A");
+	}
+	err = modem_info_string_get(MODEM_INFO_TEMP, temp, sizeof(temp));
+	if (err < 0) {
+		snprintf(oper, sizeof(oper), "N/A");
+	}
+
+	snprintf(message, sizeof(message),
+				"%s,,%d,%s,%s,%s,%s,%.2f,%.2f,%d,%s,%s,%s,%s",
+				imei,
+				999,
+				rsrp,
+				band,
+				ue_mode,
+				"90198",
+				gnss_data->latitude,
+				gnss_data->longitude,
+				(int)gnss_data->accuracy,
+				"99.99",temp,"999.99","99.99");
+#else
 	/* Format GNSS data as string */
 	snprintf(message, sizeof(message),
 		"GNSS: lat=%.2f, lon=%.2f, alt=%.2f, time=%04d-%02d-%02d %02d:%02d:%02d",
 		(double)gnss_data->latitude, (double)gnss_data->longitude, (double)gnss_data->altitude,
 		gnss_data->datetime.year, gnss_data->datetime.month, gnss_data->datetime.day,
 		gnss_data->datetime.hour, gnss_data->datetime.minute, gnss_data->datetime.seconds);
+#endif
 
 	/* Send data */
 	err = send(sock_fd, message, strlen(message), 0);
