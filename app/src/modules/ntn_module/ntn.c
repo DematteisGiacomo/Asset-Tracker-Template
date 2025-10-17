@@ -20,6 +20,10 @@
 
 #include "ntn.h"
 
+#if defined(CONFIG_APP_LED)
+#include "led.h"
+#endif
+
 /* Socket state */
 static int sock_fd = -1;
 static struct sockaddr_storage host_addr;
@@ -132,25 +136,25 @@ static void apply_gnss_time(const struct nrf_modem_gnss_pvt_data_frame *pvt_data
 
 static void gnss_location_work_handler(struct k_work *work)
 {
-    int err;
-    struct nrf_modem_gnss_pvt_data_frame pvt_data;
+	int err;
+	struct nrf_modem_gnss_pvt_data_frame pvt_data;
 
-    /* Read PVT data in thread context */
-    err = nrf_modem_gnss_read(&pvt_data, sizeof(pvt_data), NRF_MODEM_GNSS_DATA_PVT);
-    if (err != 0) {
-        LOG_ERR("Failed to read GNSS data nrf_modem_gnss_read(), err: %d", err);
-        return;
-    }
+	/* Read PVT data in thread context */
+	err = nrf_modem_gnss_read(&pvt_data, sizeof(pvt_data), NRF_MODEM_GNSS_DATA_PVT);
+	if (err != 0) {
+		LOG_ERR("Failed to read GNSS data nrf_modem_gnss_read(), err: %d", err);
+		return;
+	}
 
-    if (pvt_data.flags & NRF_MODEM_GNSS_PVT_FLAG_FIX_VALID) {
-        LOG_DBG("Got valid GNSS location: lat: %f, lon: %f, alt: %f",
-		(double)pvt_data.latitude,
-		(double)pvt_data.longitude,
-		(double)pvt_data.altitude);
-        memcpy(&last_pvt, &pvt_data, sizeof(last_pvt));
-        apply_gnss_time(&last_pvt);
-        ntn_msg_publish(NTN_LOCATION_SEARCH_DONE);
-
+	if (pvt_data.flags & NRF_MODEM_GNSS_PVT_FLAG_FIX_VALID) {
+		LOG_DBG("Got valid GNSS location: lat: %f, lon: %f, alt: %f",
+			(double)pvt_data.latitude,
+			(double)pvt_data.longitude,
+			(double)pvt_data.altitude);
+		memcpy(&last_pvt, &pvt_data, sizeof(last_pvt));
+		apply_gnss_time(&last_pvt);
+		ntn_msg_publish(NTN_LOCATION_SEARCH_DONE);
+	}
 	/* Log SV (Satellite Vehicle) data */
 	for (int i = 0; i < NRF_MODEM_GNSS_MAX_SATELLITES; i++) {
 		if (pvt_data.sv[i].sv == 0) {
@@ -167,7 +171,6 @@ static void gnss_location_work_handler(struct k_work *work)
 		pvt_data.sv[i].flags & NRF_MODEM_GNSS_SV_FLAG_USED_IN_FIX ? 1 : 0,
 		pvt_data.sv[i].flags & NRF_MODEM_GNSS_SV_FLAG_UNHEALTHY ? 1 : 0);
 	}
-    }
 }
 
 static int sgp4_propagator_compute()
@@ -558,11 +561,30 @@ static void state_gnss_entry(void *obj)
 	err = nrf_modem_gnss_fix_retry_set(180);
 	err = nrf_modem_gnss_start();
 
+	#if defined(CONFIG_APP_LED)
+	/* Yellow pattern when GNSS mode */
+	struct led_msg led_msg = {
+		.type = LED_RGB_SET,
+		.red = 255,
+		.green = 255,
+		.blue = 0,
+		.duration_on_msec = 250,
+		.duration_off_msec = 2000,
+		.repetitions = 3,
+	};
+
+	err = zbus_chan_pub(&LED_CHAN, &led_msg, K_SECONDS(1));
+	if (err) {
+		LOG_ERR("zbus_chan_pub, error: %d", err);
+	}
+	#endif
+
 }
 
 static void state_gnss_run(void *obj)
 {
 	struct ntn_state_object *state = (struct ntn_state_object *)obj;
+	int err;
 
 	if (state->chan == &NTN_CHAN) {
 		struct ntn_msg *msg = (struct ntn_msg *)state->msg_buf;
@@ -570,6 +592,23 @@ static void state_gnss_run(void *obj)
 		if (msg->type == NTN_LOCATION_SEARCH_DONE) {
 			/* Location search completed, transition to NTN mode */
 			smf_set_state(SMF_CTX(state), &states[STATE_NTN]);
+			#if defined(CONFIG_APP_LED)
+			/* Green pattern when GNSS done */
+			struct led_msg led_msg = {
+				.type = LED_RGB_SET,
+				.red = 0,
+				.green = 255,
+				.blue = 0,
+				.duration_on_msec = 250,
+				.duration_off_msec = 2000,
+				.repetitions = 3,
+			};
+
+			err = zbus_chan_pub(&LED_CHAN, &led_msg, K_SECONDS(1));
+			if (err) {
+				LOG_ERR("zbus_chan_pub, error: %d", err);
+			}
+			#endif
 		}
 	}
 }
@@ -783,6 +822,24 @@ static void state_ntn_run(void *obj)
 		if (msg->type == NTN_NETWORK_CONNECTED) {
 			LOG_DBG("Received NTN_NETWORK_CONNECTED, ping and setting up socket");
 
+			#if defined(CONFIG_APP_LED)
+			/* Blue pattern when NTN mode */
+			struct led_msg led_msg = {
+				.type = LED_RGB_SET,
+				.red = 0,
+				.green = 0,
+				.blue = 255,
+				.duration_on_msec = 250,
+				.duration_off_msec = 2000,
+				.repetitions = 3,
+			};
+
+			err = zbus_chan_pub(&LED_CHAN, &led_msg, K_SECONDS(1));
+			if (err) {
+				LOG_ERR("zbus_chan_pub, error: %d", err);
+			}
+			#endif
+
 			if (open_ping_socket() != 0) {
 				LOG_ERR("Failed to open ping socket");
 				return;
@@ -792,7 +849,6 @@ static void state_ntn_run(void *obj)
 
 
 			close_ping_socket();
-
 
 
 			/* Network is connected, set up socket */

@@ -7,6 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/zbus/zbus.h>
 
@@ -106,6 +107,30 @@ static int pwm_out(const struct led_msg *led_msg, bool force_off)
 	return 0;
 }
 
+static int led_pwm_start(void)
+{
+	int err = pm_device_action_run(pwm_led0.dev, PM_DEVICE_ACTION_RESUME);
+
+	if (err) {
+		LOG_ERR("PWM enable failed, pm_device_action_run: %d.", err);
+		return err;
+	}
+
+	return 0;
+}
+
+static int led_pwm_stop(void)
+{
+	int err = pm_device_action_run(pwm_led0.dev, PM_DEVICE_ACTION_SUSPEND);
+
+	if (err) {
+		LOG_ERR("PWM disable failed, pm_device_action_run: %d.", err);
+		return err;
+	}
+
+	return 0;
+}
+
 /* Timer work handler for LED blinking */
 static void blink_timer_handler(struct k_work *work)
 {
@@ -127,6 +152,9 @@ static void blink_timer_handler(struct k_work *work)
 		led_state.repetitions--;
 		if (led_state.repetitions == 0) {
 			/* We're done, don't schedule next toggle */
+			/* Suspend led PWM, it messes up GNSS */
+			LOG_INF("Suspend led pwm");
+			led_pwm_stop();
 			return;
 		}
 	}
@@ -149,6 +177,9 @@ static void led_callback(const struct zbus_channel *chan)
 	if (&LED_CHAN == chan) {
 		int err;
 		const struct led_msg *led_msg = zbus_chan_const_msg(chan);
+
+		LOG_INF("Start led pwm");
+		led_pwm_start();
 
 		/* Cancel any existing blink timer */
 		(void)k_work_cancel_delayable(&blink_work);
@@ -182,6 +213,8 @@ static void led_callback(const struct zbus_channel *chan)
 static int led_init(void)
 {
 	k_work_init_delayable(&blink_work, blink_timer_handler);
+
+	led_pwm_stop();
 
 	return 0;
 }
