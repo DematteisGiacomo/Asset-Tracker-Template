@@ -23,6 +23,7 @@
 #if defined(CONFIG_APP_LED)
 #include "led.h"
 #endif
+#include "button.h"
 
 /* Socket state */
 static int sock_fd = -1;
@@ -44,6 +45,7 @@ ZBUS_MSG_SUBSCRIBER_DEFINE(ntn);
 
 /* Observe NTN channel */
 ZBUS_CHAN_ADD_OBS(NTN_CHAN, ntn, 0);
+ZBUS_CHAN_ADD_OBS(BUTTON_CHAN, ntn, 0);
 
 #define MAX_MSG_SIZE sizeof(struct ntn_msg)
 
@@ -534,6 +536,9 @@ static void state_running_run(void *obj)
 			k_timer_start(&state->ntn_timer, K_MINUTES(CONFIG_APP_NTN_TIMER_TIMEOUT_MINUTES), K_NO_WAIT);
 			smf_set_state(SMF_CTX(state), &states[STATE_GNSS]);
 		}
+	} else if (state->chan == &BUTTON_CHAN) {
+		k_timer_start(&state->ntn_timer, K_MINUTES(CONFIG_APP_NTN_TIMER_TIMEOUT_MINUTES), K_NO_WAIT);
+		smf_set_state(SMF_CTX(state), &states[STATE_GNSS]);
 	}
 }
 
@@ -888,10 +893,6 @@ static void state_ntn_run(void *obj)
 			*/
 			k_sleep(K_MSEC(20000));
 
-			err = set_ntn_dormant_mode();
-			if (err) {
-				return;
-			}
 		}
 	}
 }
@@ -899,12 +900,18 @@ static void state_ntn_run(void *obj)
 static void state_ntn_exit(void *obj)
 {
 	struct ntn_state_object *state = (struct ntn_state_object *)obj;
+	int err;
 
 	/* Close socket if it was open */
 	if (sock_fd >= 0) {
 		close(sock_fd);
 		sock_fd = -1;
 		state->socket_connected = false;
+	}
+
+	err = set_ntn_dormant_mode();
+	if (err) {
+		return;
 	}
 }
 

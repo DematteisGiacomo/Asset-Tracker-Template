@@ -62,16 +62,47 @@ struct led_state {
 	struct led_msg current_state;
 	bool is_on;
 	int repetitions;
+	bool led_pwm_pm_enabled;
 };
 
 static struct led_state led_state;
 static void blink_timer_handler(struct k_work *work);
+
+static int led_pwm_start(void)
+{
+	int err = pm_device_action_run(pwm_led0.dev, PM_DEVICE_ACTION_RESUME);
+
+	if (err) {
+		LOG_ERR("PWM enable failed, pm_device_action_run: %d.", err);
+		return err;
+	}
+
+	return 0;
+}
+
+static int led_pwm_stop(void)
+{
+	int err = pm_device_action_run(pwm_led0.dev, PM_DEVICE_ACTION_SUSPEND);
+
+	if (err) {
+		LOG_ERR("PWM disable failed, pm_device_action_run: %d.", err);
+		return err;
+	}
+
+	return 0;
+}
 
 static int pwm_out(const struct led_msg *led_msg, bool force_off)
 {
 	int err;
 
 	#define PWM_PERIOD PWM_USEC(255)
+
+	if (!led_state.led_pwm_pm_enabled) {
+		LOG_INF("Start led pwm");
+		led_pwm_start();
+		led_state.led_pwm_pm_enabled = 1;
+	}
 
 	/* If force_off is true, turn off all LEDs regardless of led_msg values */
 	uint8_t red = force_off ? 0 : led_msg->red;
@@ -107,30 +138,6 @@ static int pwm_out(const struct led_msg *led_msg, bool force_off)
 	return 0;
 }
 
-static int led_pwm_start(void)
-{
-	int err = pm_device_action_run(pwm_led0.dev, PM_DEVICE_ACTION_RESUME);
-
-	if (err) {
-		LOG_ERR("PWM enable failed, pm_device_action_run: %d.", err);
-		return err;
-	}
-
-	return 0;
-}
-
-static int led_pwm_stop(void)
-{
-	int err = pm_device_action_run(pwm_led0.dev, PM_DEVICE_ACTION_SUSPEND);
-
-	if (err) {
-		LOG_ERR("PWM disable failed, pm_device_action_run: %d.", err);
-		return err;
-	}
-
-	return 0;
-}
-
 /* Timer work handler for LED blinking */
 static void blink_timer_handler(struct k_work *work)
 {
@@ -155,6 +162,7 @@ static void blink_timer_handler(struct k_work *work)
 			/* Suspend led PWM, it messes up GNSS */
 			LOG_INF("Suspend led pwm");
 			led_pwm_stop();
+			led_state.led_pwm_pm_enabled = 0;
 			return;
 		}
 	}
@@ -177,9 +185,6 @@ static void led_callback(const struct zbus_channel *chan)
 	if (&LED_CHAN == chan) {
 		int err;
 		const struct led_msg *led_msg = zbus_chan_const_msg(chan);
-
-		LOG_INF("Start led pwm");
-		led_pwm_start();
 
 		/* Cancel any existing blink timer */
 		(void)k_work_cancel_delayable(&blink_work);
@@ -215,6 +220,7 @@ static int led_init(void)
 	k_work_init_delayable(&blink_work, blink_timer_handler);
 
 	led_pwm_stop();
+	led_state.led_pwm_pm_enabled = 0;
 
 	return 0;
 }
