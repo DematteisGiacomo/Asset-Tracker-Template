@@ -77,7 +77,6 @@ struct ntn_state_object {
 	int sock_fd;
 };
 
-static struct nrf_modem_gnss_pvt_data_frame last_pvt;
 static struct k_work gnss_timer_work;
 static struct k_work ntn_timer_work;
 static struct k_work gnss_location_work;
@@ -90,15 +89,15 @@ static void pdn_event_handler(uint8_t cid, enum pdn_event event, int reason);
 
 /* Forward declarations */
 static void state_running_entry(void *obj);
-static void state_running_run(void *obj);
+static enum smf_state_result state_running_run(void *obj);
 static void state_gnss_entry(void *obj);
-static void state_gnss_run(void *obj);
+static enum smf_state_result state_gnss_run(void *obj);
 static void state_gnss_exit(void *obj);
 static void state_ntn_entry(void *obj);
-static void state_ntn_run(void *obj);
+static enum smf_state_result state_ntn_run(void *obj);
 static void state_ntn_exit(void *obj);
 static void state_idle_entry(void *obj);
-static void state_idle_run(void *obj);
+static enum smf_state_result state_idle_run(void *obj);
 
 /* State machine definition */
 static const struct smf_state states[] = {
@@ -126,6 +125,20 @@ static void publish_last_pvt(const struct nrf_modem_gnss_pvt_data_frame *pvt)
 	}
 }
 
+static int parse_time_of_pass(const char *time_str, struct tm *out)
+{
+    if (sscanf(time_str, "%d-%d-%d-%d:%d:%d",
+               &out->tm_year, &out->tm_mon, &out->tm_mday,
+               &out->tm_hour, &out->tm_min, &out->tm_sec) != 6) {
+        return -EINVAL;
+    }
+
+    out->tm_year -= 1900;
+    out->tm_mon  -= 1;
+    return 0;
+}
+
+
 /* Helper function to parse time and set up timers */
 static int reschedule_timers(struct ntn_state_object *state, const char * const time_of_pass)
 {
@@ -144,10 +157,8 @@ static int reschedule_timers(struct ntn_state_object *state, const char * const 
 
 	/* Parse configured time of pass */
 	struct tm pass_time = {0};
-	char *parse_result = strptime(time_of_pass, "%Y-%m-%d-%H:%M:%S", &pass_time);
-	if (parse_result == NULL) {
+	if (parse_time_of_pass(time_of_pass, &pass_time) < 0) {
 		LOG_ERR("Failed to parse configured time of pass");
-
 		return -EINVAL;
 	}
 
@@ -235,7 +246,7 @@ static void apply_gnss_time(const struct nrf_modem_gnss_pvt_data_frame *pvt_data
 		.tm_sec = pvt_data->datetime.seconds,
 	};
 
-	date_time_set(&gnss_time);
+	err = date_time_set(&gnss_time);
 	if (err) {
 		LOG_ERR("Failed to apply GNSS time, error: %d", err);
 	}
@@ -279,12 +290,6 @@ static void gnss_location_work_handler(struct k_work *work)
 		pvt_data.sv[i].flags & NRF_MODEM_GNSS_SV_FLAG_USED_IN_FIX ? 1 : 0,
 		pvt_data.sv[i].flags & NRF_MODEM_GNSS_SV_FLAG_UNHEALTHY ? 1 : 0);
 	}
-}
-
-static int sgp4_propagator_compute()
-{
-	// Placeholder
-	return CONFIG_APP_NTN_TIMER_TIMEOUT_MINUTES * 60;
 }
 
 /* Helper functions */
@@ -617,7 +622,7 @@ static int sock_send_gnss_data(struct ntn_state_object *state)
 	int err;
 	char message[256];
 
-	const struct nrf_modem_gnss_pvt_data_frame *gnss_data = state->last_pvt;
+	const struct nrf_modem_gnss_pvt_data_frame *gnss_data = &state->last_pvt;
 
 
 	if (state->sock_fd < 0) {
@@ -763,9 +768,8 @@ static void state_running_entry(void *obj)
 	}
 }
 
-static void state_running_run(void *obj)
+static enum smf_state_result state_running_run(void *obj)
 {
-	int err;
 	struct ntn_state_object *state = (struct ntn_state_object *)obj;
 
 
@@ -798,6 +802,8 @@ static void state_running_run(void *obj)
 			break;
 		}
 	}
+
+	return SMF_EVENT_PROPAGATE;
 }
 
 static void state_gnss_entry(void *obj)
@@ -815,9 +821,8 @@ static void state_gnss_entry(void *obj)
 	}
 }
 
-static void state_gnss_run(void *obj)
+static enum smf_state_result state_gnss_run(void *obj)
 {
-	int err;
 	struct ntn_state_object *state = (struct ntn_state_object *)obj;
 
 	if (state->chan == &NTN_CHAN) {
@@ -829,6 +834,8 @@ static void state_gnss_run(void *obj)
 			ntn_msg_publish(NTN_SET_IDLE);
 		}
 	}
+
+	return SMF_EVENT_PROPAGATE;
 }
 
 static void state_gnss_exit(void *obj)
@@ -851,7 +858,7 @@ static void state_ntn_entry(void *obj)
 	}
 }
 
-static void state_ntn_run(void *obj)
+static enum smf_state_result state_ntn_run(void *obj)
 {
 	int err;
 	struct ntn_state_object *state = (struct ntn_state_object *)obj;
@@ -895,6 +902,8 @@ static void state_ntn_run(void *obj)
 			ntn_msg_publish(NTN_SET_IDLE);
 		}
 	}
+
+	return SMF_EVENT_PROPAGATE;
 }
 
 static void state_ntn_exit(void *obj)
@@ -925,11 +934,13 @@ static void state_idle_entry(void *obj)
 }
 
 
-static void state_idle_run(void *obj)
+static enum smf_state_result state_idle_run(void *obj)
 {
 	ARG_UNUSED(obj);
 
 	LOG_DBG("%s", __func__);
+
+	return SMF_EVENT_PROPAGATE;
 }
 
 
@@ -959,14 +970,13 @@ static void lte_lc_evt_handler(const struct lte_lc_evt *const evt)
 			ntn_msg_publish(NTN_SET_IDLE);
 		} else if (evt->nw_reg_status == LTE_LC_NW_REG_UNKNOWN) {
 			LOG_DBG("LTE_LC_NW_REG_UNKNOWN");
-			ntn_msg_publish(NTN_SET_IDLE);
 		}
 
 		break;
 	case LTE_LC_EVT_MODEM_EVENT:
-		if (evt->modem_evt == LTE_LC_MODEM_EVT_RESET_LOOP) {
+		if (evt->modem_evt.type == LTE_LC_MODEM_EVT_RESET_LOOP) {
 			LOG_WRN("The modem has detected a reset loop!");
-		} else if (evt->modem_evt == LTE_LC_MODEM_EVT_LIGHT_SEARCH_DONE) {
+		} else if (evt->modem_evt.type == LTE_LC_MODEM_EVT_LIGHT_SEARCH_DONE) {
 			LOG_DBG("LTE_LC_MODEM_EVT_LIGHT_SEARCH_DONE");
 		}
 
