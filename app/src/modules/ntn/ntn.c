@@ -504,10 +504,12 @@ static int sock_send_gnss_data(struct ntn_state_object *state)
 {
 	int err;
 	char message[256];
-	char imei[16] = {0};
-	char imei_suffix[5];
-	size_t imei_len;
-	char temp[16] = {0};
+	// char imei[16] = {0};
+	// char imei_suffix[5];
+	// size_t imei_len;
+	// char temp[16] = {0};
+
+	const struct nrf_modem_gnss_pvt_data_frame *gnss_data = &state->last_pvt;
 
 	if (state->sock_fd < 0) {
 		LOG_ERR("Socket not connected");
@@ -515,76 +517,130 @@ static int sock_send_gnss_data(struct ntn_state_object *state)
 		return -ENOTCONN;
 	}
 
+
+	char rsrp[16] = {0}, band[16] = {0}, ue_mode[16] = {0}, oper[16] = {0}, imei[16] = {0};
+	char temp[16] = {0};
 	err = modem_info_string_get(MODEM_INFO_IMEI, imei, sizeof(imei));
 	if (err < 0) {
-		err = snprintk(imei, sizeof(imei), "N/A");
-		if (err < 0 || err >= sizeof(imei)) {
-			LOG_ERR("Failed to get IMEI, error: %d", err);
-
-			return -EINVAL;
-		}
+		LOG_WRN("Failed to get modem IMEI, error: %d. Using fallback value.", err);
+		snprintk(imei, sizeof(imei), "000000000000000");
 	}
 
-	/* Extract last 4 characters of IMEI safely */
-
-	imei_len = strnlen(imei, sizeof(imei));
-	if (imei_len > 4) {
-		err = snprintk(imei_suffix, sizeof(imei_suffix), "%s", imei + (imei_len - 4));
-		if (err < 0 || err >= sizeof(imei_suffix)) {
-			LOG_ERR("Failed to get IMEI suffix, error: %d", err);
-
-			return -EINVAL;
-		}
-	} else {
-		err = snprintk(imei_suffix, sizeof(imei_suffix), "N/A");
-		if (err < 0 || err >= sizeof(imei_suffix)) {
-			LOG_ERR("Failed to get IMEI suffix, error: %d", err);
-
-			return -EINVAL;
-		}
-
-		LOG_WRN("IMEI is too short, using N/A");
+	err = modem_info_string_get(MODEM_INFO_RSRP, rsrp, sizeof(rsrp));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem RSRP, error: %d. Using fallback value.", err);
+		snprintk(rsrp, sizeof(rsrp), "-115");
 	}
 
-	imei_suffix[sizeof(imei_suffix) - 1] = '\0';
+	err = modem_info_string_get(MODEM_INFO_CUR_BAND, band, sizeof(band));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem band, error: %d. Using fallback value.", err);
+		snprintk(band, sizeof(band), "256");
+	}
 
-	/* Get the temperature from the modem */
+	err = modem_info_string_get(MODEM_INFO_UE_MODE, ue_mode, sizeof(ue_mode));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem UE mode, error: %d. Using fallback value.", err);
+		snprintk(ue_mode, sizeof(ue_mode), "0");
+	}
+
+	err = modem_info_string_get(MODEM_INFO_OPERATOR, oper, sizeof(oper));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem operator, error: %d. Using fallback value.", err);
+		snprintk(oper, sizeof(oper), "90198");
+	}
+
 	err = modem_info_string_get(MODEM_INFO_TEMP, temp, sizeof(temp));
 	if (err < 0) {
-		err = snprintk(temp, sizeof(temp), "N/A");
-		if (err < 0 || err >= sizeof(temp)) {
-			LOG_ERR("Failed to get temperature, error: %d", err);
+		LOG_WRN("Failed to get modem temperature, error: %d. Using fallback value.", err);
+		snprintk(temp, sizeof(temp), "20");
 
-			return -EINVAL;
-		}
 	}
+	// imei,ping_rtt,rsrp,band,ue_mode,oper,lat_str,lon_str,accuracy,...
+	// ...battery_str,temp_str,pressure_str,humidity_str
+	snprintk(message, sizeof(message),
+				"%s,,%d,%s,%s,%s,%s,%.2f,%.2f,%d,%s,%s,%s,%s",
+				imei,
+				999,
+				rsrp,
+				band,
+				ue_mode,
+				oper,
+				gnss_data->latitude,
+				gnss_data->longitude,
+				(int)gnss_data->accuracy,
+				"99.99",temp,"999.99","99.99");
 
-	temp[sizeof(temp) - 1] = '\0';
+	// err = modem_info_string_get(MODEM_INFO_IMEI, imei, sizeof(imei));
+	// if (err < 0) {
+	// 	err = snprintk(imei, sizeof(imei), "N/A");
+	// 	if (err < 0 || err >= sizeof(imei)) {
+	// 		LOG_ERR("Failed to get IMEI, error: %d", err);
 
-#if defined(CONFIG_APP_NTN_SEND_GNSS_DATA)
-	/* Format GNSS data as string */
-	err = snprintk(message, sizeof(message),
-		"Device: *%s, temp: %s, lat=%.2f, lon=%.2f, alt=%.2f, "
-		"time=%04d-%02d-%02d %02d:%02d:%02d",
-		imei_suffix, temp,
-		(double)state->last_pvt.latitude, (double)state->last_pvt.longitude, (double)state->last_pvt.altitude,
-		state->last_pvt.datetime.year, state->last_pvt.datetime.month, state->last_pvt.datetime.day,
-		state->last_pvt.datetime.hour, state->last_pvt.datetime.minute, state->last_pvt.datetime.seconds);
-	if (err < 0 || err >= sizeof(message)) {
-		LOG_ERR("Failed to format GNSS data, error: %d", err);
+	// 		return -EINVAL;
+	// 	}
+	// }
 
-		return -EINVAL;
-	}
-#else
-	err = snprintk(message, sizeof(message),
-		       "Device: *%s, temp: %s",
-		       imei_suffix, temp);
-	if (err < 0 || err >= sizeof(message)) {
-		LOG_ERR("Failed to format GNSS data, error: %d", err);
+	// /* Extract last 4 characters of IMEI safely */
 
-		return -EINVAL;
-	}
-#endif
+	// imei_len = strnlen(imei, sizeof(imei));
+	// if (imei_len > 4) {
+	// 	err = snprintk(imei_suffix, sizeof(imei_suffix), "%s", imei + (imei_len - 4));
+	// 	if (err < 0 || err >= sizeof(imei_suffix)) {
+	// 		LOG_ERR("Failed to get IMEI suffix, error: %d", err);
+
+	// 		return -EINVAL;
+	// 	}
+	// } else {
+	// 	err = snprintk(imei_suffix, sizeof(imei_suffix), "N/A");
+	// 	if (err < 0 || err >= sizeof(imei_suffix)) {
+	// 		LOG_ERR("Failed to get IMEI suffix, error: %d", err);
+
+	// 		return -EINVAL;
+	// 	}
+
+	// 	LOG_WRN("IMEI is too short, using N/A");
+	// }
+
+	// imei_suffix[sizeof(imei_suffix) - 1] = '\0';
+
+	// /* Get the temperature from the modem */
+	// err = modem_info_string_get(MODEM_INFO_TEMP, temp, sizeof(temp));
+	// if (err < 0) {
+	// 	err = snprintk(temp, sizeof(temp), "N/A");
+	// 	if (err < 0 || err >= sizeof(temp)) {
+	// 		LOG_ERR("Failed to get temperature, error: %d", err);
+
+	// 		return -EINVAL;
+	// 	}
+	// }
+
+	// temp[sizeof(temp) - 1] = '\0';
+
+// #if defined(CONFIG_APP_NTN_SEND_GNSS_DATA)
+// 	/* Format GNSS data as string */
+// 	err = snprintk(message, sizeof(message),
+// 		"Device: *%s, temp: %s, lat=%.2f, lon=%.2f, alt=%.2f, "
+// 		"time=%04d-%02d-%02d %02d:%02d:%02d",
+// 		imei_suffix, temp,
+// 		(double)state->last_pvt.latitude, (double)state->last_pvt.longitude, (double)state->last_pvt.altitude,
+// 		state->last_pvt.datetime.year, state->last_pvt.datetime.month, state->last_pvt.datetime.day,
+// 		state->last_pvt.datetime.hour, state->last_pvt.datetime.minute, state->last_pvt.datetime.seconds);
+// 	if (err < 0 || err >= sizeof(message)) {
+// 		LOG_ERR("Failed to format GNSS data, error: %d", err);
+
+// 		return -EINVAL;
+// 	}
+// #else
+// 	err = snprintk(message, sizeof(message),
+// 		       "Device: *%s, temp: %s",
+// 		       imei_suffix, temp);
+// 	if (err < 0 || err >= sizeof(message)) {
+// 		LOG_ERR("Failed to format GNSS data, error: %d", err);
+
+// 		return -EINVAL;
+// 	}
+// #endif
 
 	/* Send data */
 	err = send(state->sock_fd, message, strlen(message), 0);
