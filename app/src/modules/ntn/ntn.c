@@ -24,6 +24,46 @@
 #include "app_common.h"
 #include "ntn.h"
 
+
+#include <soc.h>
+#include <nrfx.h>
+ 
+void modem_trace_enable(void)
+{
+    /* GPIO configurations for trace and debug */
+    #define CS_PIN_CFG_TRACE_CLK    21 //GPIO_OUT_PIN21_Pos
+    #define CS_PIN_CFG_TRACE_DATA0  22 //GPIO_OUT_PIN22_Pos
+    #define CS_PIN_CFG_TRACE_DATA1  23 //GPIO_OUT_PIN23_Pos
+    #define CS_PIN_CFG_TRACE_DATA2  24 //GPIO_OUT_PIN24_Pos
+    #define CS_PIN_CFG_TRACE_DATA3  25 //GPIO_OUT_PIN25_Pos
+ 
+    NRF_GPIO_Type *port = NRF_P0_NS;
+ 
+    // Configure outputs.
+    // CS_PIN_CFG_TRACE_CLK
+    port->PIN_CNF[CS_PIN_CFG_TRACE_CLK] = (GPIO_PIN_CNF_DRIVE_H0H1 << GPIO_PIN_CNF_DRIVE_Pos) |
+                                                (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos);
+ 
+    // CS_PIN_CFG_TRACE_DATA0
+    port->PIN_CNF[CS_PIN_CFG_TRACE_DATA0] = (GPIO_PIN_CNF_DRIVE_H0H1 << GPIO_PIN_CNF_DRIVE_Pos) |
+                                                  (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos);
+ 
+    // CS_PIN_CFG_TRACE_DATA1
+    port->PIN_CNF[CS_PIN_CFG_TRACE_DATA1] = (GPIO_PIN_CNF_DRIVE_H0H1 << GPIO_PIN_CNF_DRIVE_Pos) |
+                                                  (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos);
+ 
+    // CS_PIN_CFG_TRACE_DATA2
+    port->PIN_CNF[CS_PIN_CFG_TRACE_DATA2] = (GPIO_PIN_CNF_DRIVE_H0H1 << GPIO_PIN_CNF_DRIVE_Pos) |
+                                                  (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos);
+ 
+    // CS_PIN_CFG_TRACE_DATA3
+    port->PIN_CNF[CS_PIN_CFG_TRACE_DATA3] = (GPIO_PIN_CNF_DRIVE_H0H1 << GPIO_PIN_CNF_DRIVE_Pos) |
+                                                  (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos);
+ 
+    port->DIR = 0xFFFFFFFF;
+ 
+}
+
 LOG_MODULE_REGISTER(ntn, CONFIG_APP_NTN_LOG_LEVEL);
 
 /* AT monitor for network notifications.
@@ -1070,6 +1110,8 @@ static void state_running_entry(void *obj)
 	}
 
 	k_work_submit(&keepalive_timer_work);
+
+	modem_trace_enable();
 }
 
 static enum smf_state_result state_running_run(void *obj)
