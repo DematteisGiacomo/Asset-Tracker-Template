@@ -12,9 +12,9 @@
 #include <modem/pdn.h>
 #include <date_time.h>
 #include <modem/nrf_modem_lib.h>
+#include <modem/ntn.h>
 #include <modem/modem_info.h>
 #include <nrf_modem_at.h>
-#include <modem/at_monitor.h>
 #include <nrf_modem_gnss.h>
 #include <zephyr/task_wdt/task_wdt.h>
 #include <zephyr/net/socket.h>
@@ -24,17 +24,7 @@
 #include "app_common.h"
 #include "ntn.h"
 
-LOG_MODULE_REGISTER(ntn, CONFIG_APP_NTN_LOG_LEVEL);
-
-/* AT monitor for network notifications.
- * The monitor is needed to receive notification when in the case where the modem has been
- * put into offline mode while keeping registration context.
- * In this case, the modem will send a +CEREG notification with status 1 or 5 when NTN is
- * re-enabled. The LTE link controller does not forward this because it is equal to the previous
- * registration status. To work around this, we monitor the +CEREG notification and forward it
- * to the NTN module when offline-while-keeping-registration mode is enabled.
- */
-AT_MONITOR(cereg_monitor, "CEREG", cereg_mon, PAUSED);
+LOG_MODULE_REGISTER(ntn_module, CONFIG_APP_NTN_LOG_LEVEL);
 
 /* Define channels provided by this module */
 ZBUS_CHAN_DEFINE(NTN_CHAN,
@@ -115,40 +105,6 @@ static const struct smf_state states[] = {
 				&states[STATE_RUNNING], NULL),
 };
 
-// static void log_stack_usage(const char *location)
-// {
-// #ifdef CONFIG_THREAD_STACK_INFO
-// 	size_t unused;
-// 	k_tid_t current = k_current_get();
-// 	const char *thread_name = k_thread_name_get(current);
-	
-// 	if (k_thread_stack_space_get(current, &unused) == 0) {
-// 		// Try to get stack size - this is architecture dependent
-// 		size_t used = 0;
-// 		size_t total = 0;
-		
-// 		struct k_thread *thread = (struct k_thread *)current;
-// 		if (thread->stack_info.size > 0) {
-// 			total = thread->stack_info.size;
-// 			used = total - unused;
-// 		}
-		
-// 		if (total > 0) {
-// 			LOG_WRN("[%s] Thread: '%s' (ID:%p), Stack: %zu/%zu used, %zu free",
-// 				location,
-// 				thread_name ? thread_name : "unnamed",
-// 				(void *)current,
-// 				used, total, unused);
-// 		} else {
-// 			LOG_WRN("[%s] Thread: '%s' (ID:%p), Stack: %zu bytes free",
-// 				location,
-// 				thread_name ? thread_name : "unnamed",
-// 				(void *)current,
-// 				unused);
-// 		}
-// 	}
-// #endif
-// }
 
 /* Event handlers */
 
@@ -256,6 +212,38 @@ static void lte_lc_evt_handler(const struct lte_lc_evt *const evt)
 		}
 
 		break;
+	case LTE_LC_EVT_PDN:
+		switch (evt->pdn.type) {
+		case LTE_LC_EVT_PDN_ACTIVATED:
+			LOG_DBG("PDN connection activated");
+			ntn_msg_publish(NTN_NETWORK_CONNECTED);
+
+			break;
+		case LTE_LC_EVT_PDN_DEACTIVATED:
+			LOG_DBG("PDN connection deactivated");
+			ntn_msg_publish(NTN_NETWORK_DISCONNECTED);
+
+			break;
+		case LTE_LC_EVT_PDN_NETWORK_DETACH:
+			LOG_DBG("PDN connection network detached");
+			ntn_msg_publish(NTN_NETWORK_DISCONNECTED);
+
+			break;
+		case LTE_LC_EVT_PDN_SUSPENDED:
+			LOG_DBG("PDN connection suspended");
+			ntn_msg_publish(NTN_NETWORK_DISCONNECTED);
+
+			break;
+		case LTE_LC_EVT_PDN_RESUMED:
+			LOG_DBG("PDN connection resumed");
+			ntn_msg_publish(NTN_NETWORK_CONNECTED);
+
+			break;
+		default:
+			break;
+		}
+
+		break;
 	case LTE_LC_EVT_MODEM_EVENT:
 		if (evt->modem_evt.type == LTE_LC_MODEM_EVT_RESET_LOOP) {
 			LOG_WRN("The modem has detected a reset loop!");
@@ -285,35 +273,19 @@ static void lte_lc_evt_handler(const struct lte_lc_evt *const evt)
 	}
 }
 
-/* Event handlers */
-static void pdn_event_handler(uint8_t cid, enum pdn_event event, int reason)
+
+static void ntn_event_handler(const struct ntn_evt *evt)
 {
-	switch (event) {
-#if CONFIG_PDN_ESM_STRERROR
-	case PDN_EVENT_CNEC_ESM:
-		LOG_DBG("Event: PDP context %d, %s", cid, pdn_esm_strerror(reason));
+	switch (evt->type) {
+	case NTN_EVT_LOCATION_REQUEST:
+		LOG_DBG("NTN location requested: %s, accuracy: %d m",
+			evt->location_request.requested ? "true" : "false",
+			evt->location_request.accuracy);
 
-		break;
-#endif
-	case PDN_EVENT_ACTIVATED:
-		LOG_DBG("PDN_EVENT_ACTIVATED");
-		ntn_msg_publish(NTN_NETWORK_CONNECTED);
-
-		break;
-	case PDN_EVENT_NETWORK_DETACH:
-		LOG_DBG("PDN_EVENT_NETWORK_DETACH");
-
-		break;
-	case PDN_EVENT_DEACTIVATED:
-
-		LOG_DBG("PDN_EVENT_DEACTIVATED");
-		break;
-	case PDN_EVENT_CTX_DESTROYED:
-		LOG_DBG("PDN_EVENT_CTX_DESTROYED");
+		ntn_msg_publish(NTN_LOCATION_REQUEST);
 
 		break;
 	default:
-		LOG_ERR("Unexpected PDN event: %d", event);
 
 		break;
 	}
@@ -548,21 +520,6 @@ static int reschedule_timers(struct ntn_state_object *state, const char * const 
 	return 0;
 }
 
-static void cereg_mon(const char *notif)
-{
-	enum lte_lc_nw_reg_status status = atoi(notif + (sizeof("+CEREG: ") - 1));
-
-	if ((status == LTE_LC_NW_REG_REGISTERED_ROAMING) ||
-	    (status == LTE_LC_NW_REG_REGISTERED_HOME)) {
-		LOG_DBG("Network registration status: %s",
-			status == LTE_LC_NW_REG_REGISTERED_ROAMING ? "ROAMING" : "HOME");
-		ntn_msg_publish(NTN_NETWORK_CONNECTED);
-		LOG_DBG("Stop monitoring incoming CEREG Notifications");
-		at_monitor_pause(&cereg_monitor);
-	}
-}
-
-
 static int set_ntn_offline_mode(void)
 {
 	int err;
@@ -615,24 +572,13 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 		}
 
 		/* Configure location using latest GNSS data */
-		err = nrf_modem_at_printf("AT%%LOCATION=2,\"%f\",\"%f\",\"%f\",0,0",
-					(double)state->last_pvt.latitude,
+		err = ntn_location_set((double)state->last_pvt.latitude,
 					(double)state->last_pvt.longitude,
-					(double)state->last_pvt.altitude);
+					(float)state->last_pvt.altitude, 0);
 		if (err) {
-			LOG_ERR("Failed to set AT%%LOCATION, error: %d", err);
+			LOG_ERR("Failed to set location, error: %d", err);
 
 			return err;
-		}
-
-		/* Check if we are in offline-while-keeping-registration mode. If so, the modem has already
-		 * been able to register to an NTN network, which means that the LTE link controller will
-		 * ignore +CEREG notifications with status 1 or 5. To work around this, we monitor the
-		 * +CEREG notifications in the application.
-		 */
-		if (state->pdn_context_active) {
-			LOG_DBG("Start monitoring incoming CEREG Notifications");
-			at_monitor_resume(&cereg_monitor);
 		}
 
 		err = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_ACTIVATE_LTE);
@@ -650,30 +596,35 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 			return err;
 		}
 
-		// err = nrf_modem_at_printf("AT%%XOPCONF=23");
-		// if (err) {
-		// 	LOG_ERR("Failed to set AT%%XOPCONF=23, error: %d", err);
-
-		// 	return err;
-		// }
-
-#if defined(CONFIG_APP_NTN_CELLULARPRFL_ENABLE)
+		struct lte_lc_cellular_profile tn_profile = {
+			.id = 0,
+			.act = LTE_LC_ACT_LTEM | LTE_LC_ACT_NBIOT,
+			.uicc = LTE_LC_UICC_SOFTSIM,
+		};
 		/* Set NTN profile */
-		err = nrf_modem_at_printf("AT%%CELLULARPRFL=2,0,4,0");
+		err = lte_lc_cellular_profile_configure(&tn_profile);
 		if (err) {
-			LOG_ERR("Failed to set modem NTN profile, error: %d", err);
+			LOG_ERR("Failed to set TN profile, error: %d", err);
 
 			return err;
 		}
 
-		/* Set TN profile */
-		err = nrf_modem_at_printf("AT%%CELLULARPRFL=2,1,1,0");
+		struct lte_lc_cellular_profile ntn_profile = {
+			.id = 1,
+			.act = LTE_LC_ACT_NTN,
+			.uicc = LTE_LC_UICC_PHYSICAL,
+		};
+
+		/* Set NTN profile */
+		err = lte_lc_cellular_profile_configure(&ntn_profile);
 		if (err) {
-			LOG_ERR("Failed to set modem TN profile, error: %d", err);
+			LOG_ERR("Failed to set NTN profile, error: %d", err);
 
 			return err;
 		}
-#endif
+
+
+
 
 		/* Configure NTN system mode */
 		err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_NTN_NBIOT, LTE_LC_SYSTEM_MODE_PREFER_AUTO);
@@ -692,29 +643,13 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 		}
 #endif
 
-		err = nrf_modem_at_printf("AT+CEREG=5");
-		if (err) {
-			LOG_ERR("Failed to set AT+CEREG=5, error: %d", err);
-
-			return err;
-		}
-
-#if defined(CONFIG_APP_NTN_APN)
-		err = nrf_modem_at_printf("AT+CGDCONT=0,\"ip\",\"%s\"", CONFIG_APP_NTN_APN);
-		if (err) {
-			LOG_ERR("Failed to set NTN APN, error: %d", err);
-
-			return err;
-		}
-#endif
 
 		/* Configure location using latest GNSS data */
-		err = nrf_modem_at_printf("AT%%LOCATION=2,\"%f\",\"%f\",\"%f\",0,0",
-					(double)state->last_pvt.latitude,
+		err = ntn_location_set((double)state->last_pvt.latitude,
 					(double)state->last_pvt.longitude,
-					(double)state->last_pvt.altitude);
+					(float)state->last_pvt.altitude, 0);
 		if (err) {
-			LOG_ERR("Failed to set AT%%LOCATION, error: %d", err);
+			LOG_ERR("Failed to set location, error: %d", err);
 
 			return err;
 		}
@@ -736,22 +671,6 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 			return err;
 		}
 #endif
-
-		/*
-		Modem is activating AT+CPSMS via CONFIG_LTE_LC_PSM_MODULE=y.
-		Cast AT+CPSMS=0 to deactivate legacy PSM.
-		CFUN=45 + legacy PSM is not supported, has bugs.
-		*/
-		err = nrf_modem_at_printf("AT+CPSMS=0");
-		if (err) {
-			LOG_ERR("Failed to set AT+CPSMS=0, error: %d", err);
-
-			return err;
-		}
-
-		LOG_DBG("Pause monitoring incoming CEREG Notifications");
-		at_monitor_pause(&cereg_monitor);
-
 
 		configure_periodic_search();
 
@@ -1061,13 +980,15 @@ static void state_running_entry(void *obj)
 	/* Register LTE event handler */
 	lte_lc_register_handler(lte_lc_evt_handler);
 
-	/* Register handler for default PDP context 0. */
-	err = pdn_default_ctx_cb_reg(pdn_event_handler);
+	/* Register handler for default PDP context. */
+	err = lte_lc_pdn_default_ctx_events_enable();
 	if (err) {
-		LOG_ERR("pdn_default_ctx_cb_reg, error: %d", err);
+		LOG_ERR("lte_lc_pdn_default_ctx_events_enable, error: %d", err);
 
 		return;
 	}
+
+	ntn_register_handler(ntn_event_handler);
 
 	k_work_submit(&keepalive_timer_work);
 }
