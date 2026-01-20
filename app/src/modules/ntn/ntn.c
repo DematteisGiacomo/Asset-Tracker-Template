@@ -31,7 +31,9 @@
 
 #include "app_common.h"
 #include "ntn.h"
+#if defined(CONFIG_TLE_VIA_HTTP)
 #include "celestrak_client.h"
+#endif
 #include "sat_prediction.h"
 
 LOG_MODULE_REGISTER(ntn_module, CONFIG_APP_NTN_LOG_LEVEL);
@@ -113,7 +115,7 @@ static enum smf_state_result state_idle_run(void *obj);
 /* State machine definition */
 static const struct smf_state states[] = {
 	[STATE_RUNNING] = SMF_CREATE_STATE(state_running_entry, state_running_run, NULL,
-				NULL, &states[STATE_TN]),
+				NULL, &states[STATE_GNSS]),
 	[STATE_GNSS] = SMF_CREATE_STATE(state_gnss_entry, state_gnss_run, state_gnss_exit,
 				&states[STATE_RUNNING], NULL),
 	[STATE_TN] = SMF_CREATE_STATE(state_tn_entry, state_tn_run, state_tn_exit,
@@ -206,6 +208,7 @@ static void lte_lc_evt_handler(const struct lte_lc_evt *const evt)
 		} else if (evt->nw_reg_status == LTE_LC_NW_REG_UNKNOWN) {
 			/* cereg 4 */
 			LOG_DBG("LTE_LC_NW_REG_UNKNOWN");
+			ntn_msg_publish(NETWORK_CONNECTION_FAILED);
 		}
 
 		break;
@@ -576,7 +579,14 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 		return err;
 	}
 
-	/* Configure location using latest GNSS data */
+	// /* Configure location using latest GNSS data */
+	// err = ntn_location_set((double)state->last_pvt.latitude,
+	// 			(double)state->last_pvt.longitude,
+	// 			(float)state->last_pvt.altitude,
+	// 			location_validity_time);
+	state->last_pvt.latitude = 63.421182;
+	state->last_pvt.longitude = 10.436835;
+	state->last_pvt.altitude= 143.8;
 	err = ntn_location_set((double)state->last_pvt.latitude,
 				(double)state->last_pvt.longitude,
 				(float)state->last_pvt.altitude,
@@ -587,14 +597,14 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 		return err;
 	}
 
-#if defined(CONFIG_APP_NTN_COPS_ENABLE)
-	err = nrf_modem_at_printf("AT+COPS=1,2,\"%s\"", CONFIG_APP_NTN_COPS);
-	if (err) {
-		LOG_ERR("Failed to set AT+COPS=1,2,\"90197\", error: %d", err);
+// #if defined(CONFIG_APP_NTN_COPS_ENABLE)
+// 	err = nrf_modem_at_printf("AT+COPS=1,2,\"%s\"", CONFIG_APP_NTN_COPS);
+// 	if (err) {
+// 		LOG_ERR("Failed to set AT+COPS=1,2,\"90197\", error: %d", err);
 
-		return err;
-	}
-#endif
+// 		return err;
+// 	}
+// #endif
 
 
 #if defined(CONFIG_APP_NTN_BANDLOCK_ENABLE)
@@ -930,12 +940,14 @@ static void state_running_entry(void *obj)
 	/* Initialize satellite prediction module */
 	sat_prediction_init();
 
+#if defined(CONFIG_TLE_VIA_HTTP)
 	/* Initialize Celestrak client */
 	err = celestrak_client_init();
 	if (err) {
 		LOG_ERR("Failed to initialize Celestrak client, error: %d", err);
 		return;
 	}
+#endif
 
 	/* Register GNSS event handler */
 	nrf_modem_gnss_event_handler_set(gnss_event_handler);
@@ -992,7 +1004,7 @@ static void state_running_entry(void *obj)
 	struct lte_lc_cellular_profile tn_profile = {
 			.id = 0,
 			.act = LTE_LC_ACT_LTEM || LTE_LC_ACT_NBIOT,
-			.uicc = LTE_LC_UICC_SOFTSIM,
+			.uicc = LTE_LC_UICC_PHYSICAL,
 		};
 
 	/* Set TN profile */
@@ -1003,14 +1015,14 @@ static void state_running_entry(void *obj)
 			return;
 		}
 
-	/* Init nrfcloud coap */
-	err = nrf_cloud_coap_init();
-	if (err) {
-		LOG_ERR("nrf_cloud_coap_init, error: %d", err);
-		SEND_FATAL_ERROR();
+	// /* Init nrfcloud coap */
+	// err = nrf_cloud_coap_init();
+	// if (err) {
+	// 	LOG_ERR("nrf_cloud_coap_init, error: %d", err);
+	// 	SEND_FATAL_ERROR();
 
-		return;
-	}
+	// 	return;
+	// }
 
 }
 
@@ -1030,7 +1042,7 @@ static enum smf_state_result state_running_run(void *obj)
 
 			break;
 		case NTN_TRIGGER:
-			smf_set_state(SMF_CTX(state), &states[STATE_NTN]);
+			smf_set_state(SMF_CTX(state), &states[STATE_TN]);
 
 			break;
 		case GNSS_TIMEOUT:
@@ -1091,7 +1103,7 @@ static enum smf_state_result state_gnss_run(void *obj)
 				k_uptime_get() +
 				CONFIG_APP_NTN_LOCATION_VALIDITY_TIME_SECONDS * MSEC_PER_SEC;
 
-			smf_set_state(SMF_CTX(state), &states[STATE_SGP4]);
+			smf_set_state(SMF_CTX(state), &states[STATE_TN]);
 		}
 	}
 
@@ -1128,7 +1140,7 @@ static void state_tn_entry(void *obj)
 	case LTE_LC_FUNC_MODE_POWER_OFF:
 		break;
 	default:
-		err = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_OFFLINE_KEEP_REG);
+		err = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_POWER_OFF);
 		if (err) {
 			LOG_ERR("lte_lc_func_mode_set, error: %d", err);
 
@@ -1138,12 +1150,12 @@ static void state_tn_entry(void *obj)
 		break;
 	}
 
-	err = nrf_modem_at_printf("AT+COPS=0");
-	if (err) {
-		LOG_ERR("Failed to set AT+COPS=0, error: %d", err);
+	// err = nrf_modem_at_printf("AT+COPS=0");
+	// if (err) {
+	// 	LOG_ERR("Failed to set AT+COPS=0, error: %d", err);
 
-		return err;
-	}
+	// 	return err;
+	// }
 
 	err = nrf_modem_at_printf("AT%%XBANDLOCK=0");
 	if (err) {
@@ -1184,6 +1196,70 @@ static enum smf_state_result state_tn_run(void *obj)
 
 			return SMF_EVENT_HANDLED;
 		} else if (msg->type == NETWORK_CONNECTED) {
+			k_sleep(K_MSEC(5000));
+
+			/* Network is connected, set up socket */
+			err = sock_open_and_connect(state);
+			if (err) {
+				LOG_ERR("Failed to connect socket, error: %d", err);
+
+			} else {
+				LOG_DBG("Socket connected successfully");
+
+				/* Send initial GNSS data if available */
+				if (state->last_pvt.flags & NRF_MODEM_GNSS_PVT_FLAG_FIX_VALID) {
+					LOG_DBG("Sending initial GNSS data");
+
+					err = sock_send_gnss_data(state);
+					if (err) {
+						LOG_ERR("Failed to send initial GNSS data, error: %d", err);
+					} else {
+						LOG_DBG("Initial GNSS data sent successfully");
+					}
+				} else {
+					LOG_DBG("No valid GNSS data available to send initially");
+				}
+			}
+
+			/*
+			* In future, we should wait until we get ACK for data being transmitted,
+			* and send CFUN=45 only after data were sent successfully.
+			*
+			* It may take 10s to send data in NTN.
+			* k_sleep is added as intermediate solution
+			*/
+			k_sleep(K_MSEC(5000));
+
+
+
+
+			/* Test DNS resolution with a single domain */
+			struct addrinfo hints = {
+				.ai_family = AF_INET,
+				.ai_socktype = SOCK_STREAM
+			};
+			struct addrinfo *result;
+			char ipstr[INET_ADDRSTRLEN];
+			static const char *test_domains[] = {
+				"www.microsoft.com",
+				"google.com",
+				"api.nrfcloud.com"
+			};
+			static uint8_t domain_index = 0;
+			
+			LOG_INF("Testing DNS resolution for %s", test_domains[domain_index]);
+			err = getaddrinfo(test_domains[domain_index], NULL, &hints, &result);
+			if (err) {
+				LOG_ERR("DNS resolution failed for %s, error: %d", test_domains[domain_index], err);
+			} else {
+				struct sockaddr_in *addr = (struct sockaddr_in *)result->ai_addr;
+				inet_ntop(AF_INET, &addr->sin_addr, ipstr, sizeof(ipstr));
+				LOG_INF("Successfully resolved %s to IP: %s", test_domains[domain_index], ipstr);
+				freeaddrinfo(result);
+			}
+			
+			/* Move to next domain for next test */
+			domain_index = (domain_index + 1) % 3;
 
 #if defined(CONFIG_TLE_VIA_HTTP)
 			/* Fetch TLE for SIOT1 with proper error handling */
@@ -1233,67 +1309,67 @@ static enum smf_state_result state_tn_run(void *obj)
 			state->has_valid_tle = true;
 			LOG_INF("TLE data stored successfully");
 #else /* TLE via nRFCloud */
-			err = connect_to_cloud();
-			if (err) {
-				LOG_WRN("Failed to connect to nRF Cloud CoAP on TN");
-				LOG_WRN("Cloud connection is not available for resumption on NTN");
+			// err = connect_to_cloud();
+			// if (err) {
+			// 	LOG_WRN("Failed to connect to nRF Cloud CoAP on TN");
+			// 	LOG_WRN("Cloud connection is not available for resumption on NTN");
 
-				smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
+			// 	smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
 
-				return SMF_EVENT_HANDLED;
-			}
+			// 	return SMF_EVENT_HANDLED;
+			// }
 
-			LOG_INF("Cloud connection established via TN network");
+			// LOG_INF("Cloud connection established via TN network");
 
-			/* Fetch TLE from shadow */
-			uint8_t shadow_buf[1024];
-			size_t shadow_len = sizeof(shadow_buf);
+			// /* Fetch TLE from shadow */
+			// uint8_t shadow_buf[1024];
+			// size_t shadow_len = sizeof(shadow_buf);
 
-			err = nrf_cloud_coap_shadow_get(shadow_buf, &shadow_len, false, COAP_CONTENT_FORMAT_APP_CBOR);
-			if (err) {
-				LOG_ERR("Failed to get shadow data, error: %d", err);
-				smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
-				return SMF_EVENT_HANDLED;
-			}
+			// err = nrf_cloud_coap_shadow_get(shadow_buf, &shadow_len, false, COAP_CONTENT_FORMAT_APP_CBOR);
+			// if (err) {
+			// 	LOG_ERR("Failed to get shadow data, error: %d", err);
+			// 	smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
+			// 	return SMF_EVENT_HANDLED;
+			// }
 
-			/* Parse TLE from shadow */
-			struct tle_data tle;
-			err = decode_tle_from_shadow(shadow_buf, shadow_len, &tle);
-			if (err) {
-				LOG_ERR("Failed to decode TLE data, error: %d", err);
-				smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
-				return SMF_EVENT_HANDLED;
-			}
+			// /* Parse TLE from shadow */
+			// struct tle_data tle;
+			// err = decode_tle_from_shadow(shadow_buf, shadow_len, &tle);
+			// if (err) {
+			// 	LOG_ERR("Failed to decode TLE data, error: %d", err);
+			// 	smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
+			// 	return SMF_EVENT_HANDLED;
+			// }
 
-			/* Store TLE data */
-			strncpy(state->tle_name, tle.name, sizeof(state->tle_name) - 1);
-			strncpy(state->tle_line1, tle.line1, sizeof(state->tle_line1) - 1);
-			strncpy(state->tle_line2, tle.line2, sizeof(state->tle_line2) - 1);
+			// /* Store TLE data */
+			// strncpy(state->tle_name, tle.name, sizeof(state->tle_name) - 1);
+			// strncpy(state->tle_line1, tle.line1, sizeof(state->tle_line1) - 1);
+			// strncpy(state->tle_line2, tle.line2, sizeof(state->tle_line2) - 1);
 
-			/* Ensure null termination */
-			state->tle_name[sizeof(state->tle_name) - 1] = '\0';
-			state->tle_line1[sizeof(state->tle_line1) - 1] = '\0';
-			state->tle_line2[sizeof(state->tle_line2) - 1] = '\0';
+			// /* Ensure null termination */
+			// state->tle_name[sizeof(state->tle_name) - 1] = '\0';
+			// state->tle_line1[sizeof(state->tle_line1) - 1] = '\0';
+			// state->tle_line2[sizeof(state->tle_line2) - 1] = '\0';
 
-			state->has_valid_tle = true;
-			LOG_INF("TLE data stored successfully:");
-			LOG_INF("Name:  %s", state->tle_name);
-			LOG_INF("Line1: %s", state->tle_line1);
-			LOG_INF("Line2: %s", state->tle_line2);
+			// state->has_valid_tle = true;
+			// LOG_INF("TLE data stored successfully:");
+			// LOG_INF("Name:  %s", state->tle_name);
+			// LOG_INF("Line1: %s", state->tle_line1);
+			// LOG_INF("Line2: %s", state->tle_line2);
 
 
-			/* Pause the CoAP connection to save the DTLS CID and resume it
-			 * when transitioning to NTN mode.
-			 */
-			err = nrf_cloud_coap_pause();
-			if ((err < 0) && (err != -EBADF)) {
-				/* -EBADF means cloud was disconnected */
-				LOG_ERR("Error pausing connection: %d", err);
-			} else if (err == 0) {
-				LOG_INF("CoAP connection paused");
-			}
+			// /* Pause the CoAP connection to save the DTLS CID and resume it
+			//  * when transitioning to NTN mode.
+			//  */
+			// err = nrf_cloud_coap_pause();
+			// if ((err < 0) && (err != -EBADF)) {
+			// 	/* -EBADF means cloud was disconnected */
+			// 	LOG_ERR("Error pausing connection: %d", err);
+			// } else if (err == 0) {
+			// 	LOG_INF("CoAP connection paused");
+			// }
 #endif
-			smf_set_state(SMF_CTX(state), &states[STATE_GNSS]);
+			smf_set_state(SMF_CTX(state), &states[STATE_NTN]);
 
 			return SMF_EVENT_HANDLED;
 		}
@@ -1316,6 +1392,8 @@ static void state_tn_exit(void *obj)
 
 		return;
 	}
+
+	k_sleep(K_MSEC(5000));
 }
 
 static void state_sgp4_entry(void *obj)
@@ -1405,6 +1483,8 @@ static void state_ntn_entry(void *obj)
 
 	LOG_DBG("%s", __func__);
 
+	k_sleep(K_MSEC(5000));
+
 	err = set_ntn_active_mode(state);
 	if (err) {
 		LOG_ERR("Failed to set ntn active mode");
@@ -1423,6 +1503,7 @@ static enum smf_state_result state_ntn_run(void *obj)
 
 		switch (msg->type) {
 		case NETWORK_CONNECTION_FAILED:
+			k_sleep(K_MSEC(5000));
 			smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
 
 			return SMF_EVENT_HANDLED;
@@ -1497,7 +1578,9 @@ static void state_ntn_exit(void *obj)
 		LOG_ERR("Failed to set ntn dormant mode");
 	}
 
-	ntn_msg_publish(RUN_SGP4);
+	k_sleep(K_MSEC(5000));
+
+	// ntn_msg_publish(RUN_SGP4);
 }
 
 static void state_idle_entry(void *obj)
@@ -1527,7 +1610,7 @@ static enum smf_state_result state_idle_run(void *obj)
 
 			LOG_DBG("NTN location requested, location is invalid, fetching fresh TLE and GNSS");
 
-			smf_set_state(SMF_CTX(state), &states[STATE_GNSS]);
+			// smf_set_state(SMF_CTX(state), &states[STATE_GNSS]);
 		} else if (msg->type == RUN_SGP4){
 			smf_set_state(SMF_CTX(state), &states[STATE_TN]);
 
