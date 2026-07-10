@@ -199,6 +199,26 @@ static void gnss_location_work_handler(struct k_work *work)
 
 /* Helper functions */
 
+static void configure_periodic_search(void) {
+	struct lte_lc_periodic_search_cfg search_cfg = { 0 };
+
+	search_cfg.pattern_count = 1;
+	search_cfg.loop = true;
+	search_cfg.return_to_pattern = 0;
+	search_cfg.band_optimization = 0;
+
+	search_cfg.patterns[0].type = LTE_LC_PERIODIC_SEARCH_PATTERN_TABLE;
+	search_cfg.patterns[0].table.val_1 = 2;
+	search_cfg.patterns[0].table.val_2 = -1;
+	search_cfg.patterns[0].table.val_3 = -1;
+	search_cfg.patterns[0].table.val_4 = -1;
+	search_cfg.patterns[0].table.val_5 = -1;
+
+	lte_lc_periodic_search_set(&search_cfg);
+
+	return;
+}
+
 static int set_ntn_dormant_mode(void)
 {
 	int err;
@@ -229,22 +249,21 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 
 	if (state->ntn_initialized) {
 		/* Configure NTN system mode */
-		err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_NTN_NBIOT,
-					     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+		// err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_NTN_NBIOT,
+		// 			     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+		// if (err) {
+		// 	LOG_ERR("Failed to set NTN system mode, error: %d", err);
+
+		// 	return err;
+		// }
+		err = nrf_modem_at_printf("AT%%XSYSTEMMODE=0,0,0,0,0,1");
 		if (err) {
-			LOG_ERR("Failed to set NTN system mode, error: %d", err);
+			LOG_ERR("Failed to set XSYSTEMMODE=0,0,0,0,0,1, error: %d", err);
 
 			return err;
 		}
 
-		LOG_DBG("NTN initialized, using AT+CFUN=21");
 
-		err = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_ACTIVATE_LTE);
-		if (err) {
-			LOG_ERR("lte_lc_func_mode_set, error: %d", err);
-
-			return err;
-		}
 
 		err = ntn_location_set((double)state->last_pvt.latitude,
 				       (double)state->last_pvt.longitude,
@@ -255,10 +274,27 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 
 			return err;
 		}
+
+		configure_periodic_search();
+		LOG_DBG("NTN initialized, using AT+CFUN=21");
+		err = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_ACTIVATE_LTE);
+		if (err) {
+			LOG_ERR("lte_lc_func_mode_set, error: %d", err);
+
+			return err;
+		}
 	} else {
+		/* Power off modem */
+		err = lte_lc_power_off();
+		if (err) {
+			LOG_ERR("lte_lc_power_off, error: %d", err);
+
+			return err;
+		}
+
 		struct lte_lc_cellular_profile ntn_profile = {
 			.id = 0,
-			.act = LTE_LC_ACT_NTN,
+			.act = BIT(3),
 			.uicc = LTE_LC_UICC_PHYSICAL,
 		};
 
@@ -268,18 +304,16 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 			.uicc = LTE_LC_UICC_PHYSICAL,
 		};
 
-		/* Power off modem */
-		err = lte_lc_power_off();
-		if (err) {
-			LOG_ERR("lte_lc_power_off, error: %d", err);
-
-			return err;
-		}
-
 		/* Set NTN profile */
-		err = lte_lc_cellular_profile_configure(&ntn_profile);
+		// err = lte_lc_cellular_profile_configure(&ntn_profile);
+		// if (err) {
+		// 	LOG_ERR("Failed to set NTN profile, error: %d", err);
+
+		// 	return err;
+		// }
+		err = nrf_modem_at_printf("AT%%CELLULARPRFL=2,0,8,0");
 		if (err) {
-			LOG_ERR("Failed to set NTN profile, error: %d", err);
+			LOG_ERR("Failed to set CELLULARPRFL=2,0,8,0, error: %d", err);
 
 			return err;
 		}
@@ -292,11 +326,17 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 			return err;
 		}
 
-		/* Configure NTN system mode */
-		err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_NTN_NBIOT,
-					     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+		// /* Configure NTN system mode */
+		// err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_NTN_NBIOT,
+		// 			     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+		// if (err) {
+		// 	LOG_ERR("Failed to set NTN system mode, error: %d", err);
+
+		// 	return err;
+		// }
+		err = nrf_modem_at_printf("AT%%XSYSTEMMODE=0,0,0,0,0,1");
 		if (err) {
-			LOG_ERR("Failed to set NTN system mode, error: %d", err);
+			LOG_ERR("Failed to set XSYSTEMMODE=0,0,0,0,0,1, error: %d", err);
 
 			return err;
 		}
@@ -311,23 +351,36 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 			return err;
 		}
 
-#if defined(CONFIG_APP_NTN_BANDLOCK_ENABLE)
-		err = nrf_modem_at_printf("AT%%XBANDLOCK=2,,\"%i\"", CONFIG_APP_NTN_BANDLOCK);
+// #if defined(CONFIG_APP_NTN_BANDLOCK_ENABLE)
+// 		// err = nrf_modem_at_printf("AT%%XBANDLOCK=2,,\"%i\"", CONFIG_APP_NTN_BANDLOCK);
+// 		// if (err) {
+// 		// 	LOG_ERR("Failed to set NTN band lock, error: %d", err);
+
+// 		// 	return err;
+// 		// }
+// #endif
+		err = nrf_modem_at_printf("AT%%XBANDLOCK=1,,\"249\"");
 		if (err) {
 			LOG_ERR("Failed to set NTN band lock, error: %d", err);
 
 			return err;
 		}
-#endif
 
-#if defined(CONFIG_APP_NTN_CHANNEL_SELECT_ENABLE)
-		err = nrf_modem_at_printf("AT%%CHSELECT=2,14,%i", CONFIG_APP_NTN_CHANNEL_SELECT);
+// #if defined(CONFIG_APP_NTN_CHANNEL_SELECT_ENABLE)
+// 		// err = nrf_modem_at_printf("AT%%CHSELECT=2,14,%i", CONFIG_APP_NTN_CHANNEL_SELECT);
+// 		// if (err) {
+// 		// 	LOG_ERR("Failed to set NTN channel, error: %d", err);
+
+// 		// 	return err;
+// 		// }
+// #endif
+		err = nrf_modem_at_printf("AT%%FREQRANGES=1,7,,1,\"196702\",\"\"");
 		if (err) {
-			LOG_ERR("Failed to set NTN channel, error: %d", err);
+			LOG_ERR("Failed to set NTN freq ranges, error: %d", err);
 
 			return err;
 		}
-#endif
+
 
 		err = lte_lc_psm_req(false);
 		if (err) {
@@ -341,7 +394,7 @@ static int set_ntn_active_mode(struct ntn_state_object *state)
 		k_sleep(K_MSEC(5000));
 
 		LOG_DBG("NTN now initialized, using lte_lc_connect_async to connect to network");
-
+		configure_periodic_search();
 		err = lte_lc_connect_async(lte_lc_evt_handler);
 		if (err) {
 			LOG_ERR("lte_lc_connect_async, error: %d\n", err);
@@ -472,10 +525,10 @@ static int sock_send_gnss_data(struct ntn_state_object *state)
 {
 	int err;
 	char message[256];
-	char imei[16] = {0};
-	char imei_suffix[5];
-	size_t imei_len;
+	char rsrp[16] = {0}, band[16] = {0}, ue_mode[16] = {0}, oper[16] = {0}, imei[16] = {0};
+	int32_t packet_delay;
 	char temp[16] = {0};
+	const struct nrf_modem_gnss_pvt_data_frame *gnss_data = &state->last_pvt;
 
 	if (state->sock_fd < 0) {
 		LOG_ERR("Socket not connected");
@@ -485,75 +538,62 @@ static int sock_send_gnss_data(struct ntn_state_object *state)
 
 	err = modem_info_string_get(MODEM_INFO_IMEI, imei, sizeof(imei));
 	if (err < 0) {
-		err = snprintk(imei, sizeof(imei), "N/A");
-		if (err < 0 || err >= sizeof(imei)) {
-			LOG_ERR("Failed to get IMEI, error: %d", err);
-
-			return -EINVAL;
-		}
+		LOG_WRN("Failed to get modem IMEI, error: %d. Using fallback value.", err);
+		snprintk(imei, sizeof(imei), "000000000000000");
 	}
 
-	/* Extract last 4 characters of IMEI safely */
-
-	imei_len = strnlen(imei, sizeof(imei));
-	if (imei_len > 4) {
-		err = snprintk(imei_suffix, sizeof(imei_suffix), "%s", imei + (imei_len - 4));
-		if (err < 0 || err >= sizeof(imei_suffix)) {
-			LOG_ERR("Failed to get IMEI suffix, error: %d", err);
-
-			return -EINVAL;
-		}
-	} else {
-		err = snprintk(imei_suffix, sizeof(imei_suffix), "N/A");
-		if (err < 0 || err >= sizeof(imei_suffix)) {
-			LOG_ERR("Failed to get IMEI suffix, error: %d", err);
-
-			return -EINVAL;
-		}
-
-		LOG_WRN("IMEI is too short, using N/A");
+	err = modem_info_string_get(MODEM_INFO_RSRP, rsrp, sizeof(rsrp));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem RSRP, error: %d. Using fallback value.", err);
+		snprintk(rsrp, sizeof(rsrp), "25");
 	}
 
-	imei_suffix[sizeof(imei_suffix) - 1] = '\0';
+	err = modem_info_string_get(MODEM_INFO_CUR_BAND, band, sizeof(band));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem band, error: %d. Using fallback value.", err);
+		snprintk(band, sizeof(band), "256");
+	}
 
-	/* Get the temperature from the modem */
+	err = modem_info_string_get(MODEM_INFO_UE_MODE, ue_mode, sizeof(ue_mode));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem UE mode, error: %d. Using fallback value.", err);
+		snprintk(ue_mode, sizeof(ue_mode), "0");
+	}
+
+	err = modem_info_string_get(MODEM_INFO_OPERATOR, oper, sizeof(oper));
+	if (err < 0) {
+		LOG_WRN("Failed to get modem operator, error: %d. Using fallback value.", err);
+		snprintk(oper, sizeof(oper), "90103");
+	}
+
 	err = modem_info_string_get(MODEM_INFO_TEMP, temp, sizeof(temp));
 	if (err < 0) {
-		err = snprintk(temp, sizeof(temp), "N/A");
-		if (err < 0 || err >= sizeof(temp)) {
-			LOG_ERR("Failed to get temperature, error: %d", err);
-
-			return -EINVAL;
-		}
+		LOG_WRN("Failed to get modem temperature, error: %d. Using fallback value.", err);
+		snprintk(temp, sizeof(temp), "20");
 	}
 
-	temp[sizeof(temp) - 1] = '\0';
+	// if (state->modem_cell_found_time > 0 && state->modem_connectivity_time > 0) {
+	// 	packet_delay = state->modem_connectivity_time - state->modem_cell_found_time;
+	// } else {
+	// 	packet_delay = -1;
+	// }
 
-#if defined(CONFIG_APP_NTN_SEND_GNSS_DATA)
-	/* Format GNSS data as string */
-	err = snprintk(message, sizeof(message),
-		"Device: *%s, temp: %s, lat=%.2f, lon=%.2f, alt=%.2f, "
-		"time=%04d-%02d-%02d %02d:%02d:%02d",
-		imei_suffix, temp,
-		(double)state->last_pvt.latitude, (double)state->last_pvt.longitude, (double)state->last_pvt.altitude,
-		state->last_pvt.datetime.year, state->last_pvt.datetime.month, state->last_pvt.datetime.day,
-		state->last_pvt.datetime.hour, state->last_pvt.datetime.minute, state->last_pvt.datetime.seconds);
-	if (err < 0 || err >= sizeof(message)) {
-		LOG_ERR("Failed to format GNSS data, error: %d", err);
+	// imei,ping_rtt,rsrp,band,ue_mode,oper,lat_str,lon_str,accuracy,...
+	// ...battery_str,temp_str,pressure_str,humidity_str
+	snprintk(message, sizeof(message),
+				"%s,,%d,%s,%s,%s,%s,%.2f,%.2f,%d,%s,%s,%s,%s",
+				imei,
+				-1,
+				rsrp,
+				band,
+				ue_mode,
+				oper,
+				gnss_data->latitude,
+				gnss_data->longitude,
+				(int)gnss_data->accuracy,
+				"99.99",temp,"999.99","99.99");
 
-		return -EINVAL;
-	}
-#else
-	err = snprintk(message, sizeof(message),
-		       "Device: *%s, temp: %s",
-		       imei_suffix, temp);
-	if (err < 0 || err >= sizeof(message)) {
-		LOG_ERR("Failed to format GNSS data, error: %d", err);
-
-		return -EINVAL;
-	}
-#endif
-
+	LOG_DBG("Sending data");
 	/* Send data */
 	err = send(state->sock_fd, message, strlen(message), 0);
 	if (err < 0) {
@@ -802,7 +842,7 @@ static enum smf_state_result state_ntn_run(void *obj)
 		 * It may take 10s to send data in NTN.
 		 * k_sleep is added as intermediate solution
 		 */
-		k_sleep(K_MSEC(20000));
+		k_sleep(K_MSEC(60000));
 
 		smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
 
