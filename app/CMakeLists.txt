@@ -15,7 +15,10 @@ target_include_directories(app PRIVATE src/common)
 zephyr_include_directories(config)
 
 if(CONFIG_APP_NTN_MODE)
+	# companion_proto lives in <demo-repo>/common (sibling of asset-tracker-template/)
+	zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../common)
 	add_subdirectory(src/modules/ntn)
+	add_subdirectory(src/modules/companion)
 	add_subdirectory(src/modules/button)
 else()
 # Add main application source

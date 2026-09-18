@@ -1,0 +1,24 @@
+/*
+ * Copyright (c) 2026 Nordic Semiconductor ASA
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ *
+ * UART1 companion link to nRF54 (modem trace disabled — use RTT/console on UART0).
+ */
+
+/ {
+	chosen {
+		/delete-property/ nordic,modem-trace-uart;
+	};
+
+	aliases {
+		companion-uart = &uart1;
+	};
+};
+
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-1 = <&uart1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
