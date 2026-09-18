@@ -12,6 +12,7 @@ rsource "src/modules/network/Kconfig.network"
 
 if APP_NTN_MODE
 rsource "src/modules/ntn/Kconfig.ntn"
+rsource "src/modules/companion/Kconfig.companion"
 endif # APP_NTN_MODE
 
 rsource "src/modules/cloud/Kconfig.cloud"

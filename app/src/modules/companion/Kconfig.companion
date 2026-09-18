@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Nordic Semiconductor ASA
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+
+menuconfig APP_COMPANION
+	bool "Companion UART from nRF54"
+	default y
+	depends on APP_NTN
+	depends on SERIAL
+	help
+	  Receive person-detect thumbnails over UART and trigger NTN upload.
+
+if APP_COMPANION
+
+orsource "../../../../../common/Kconfig.companion"
+
+config APP_COMPANION_THREAD_STACK_SIZE
+	int "Companion thread stack size"
+	default 6144
+	help
+	  Needs room for companion_frame_decode (thumb + header) plus logging/zbus.
+
+config APP_COMPANION_THREAD_PRIORITY
+	int "Companion thread priority"
+	default 5
+	help
+	  Keep high enough to drain UART RX during thumbnail bursts from nRF54.
+
+config APP_COMPANION_SHELL
+	bool "Shell commands for local payload debug (att_companion)"
+	default y
+	depends on SHELL
+
+module = APP_COMPANION
+module-str = COMPANION
+source "subsys/logging/Kconfig.template.log_config"
+
+endif

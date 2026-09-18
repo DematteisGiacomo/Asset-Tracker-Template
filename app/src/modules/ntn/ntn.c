@@ -27,6 +27,8 @@
 #include <time.h>
 
 #include "app_common.h"
+#include "companion.h"
+#include "companion_proto.h"
 #include "ntn.h"
 #include "button.h"
 
@@ -1097,6 +1099,49 @@ static int sock_send_dummy(struct ntn_state_object *state)
 	return 0;
 }
 
+static int sock_send_companion_image(struct ntn_state_object *state)
+{
+	uint8_t payload[COMPANION_FRAME_MAX];
+	size_t len;
+	int err;
+
+	if (state->sock_fd < 0) {
+		LOG_ERR("Socket not connected");
+
+		return -ENOTCONN;
+	}
+
+	err = companion_copy_wire(payload, sizeof(payload), &len);
+	if (err) {
+		LOG_ERR("No companion payload: %d", err);
+
+		return err;
+	}
+
+	err = sock_set_send_timeout(state->sock_fd);
+	if (err < 0) {
+		return err;
+	}
+
+	err = sock_enable_send_ack(state->sock_fd);
+	if (err < 0) {
+		return err;
+	}
+
+	LOG_DBG("Sending companion payload (%u bytes)", (unsigned)len);
+	err = send(state->sock_fd, payload, len, 0);
+	if (err < 0) {
+		sock_disable_send_ack(state->sock_fd);
+		LOG_ERR("Failed to send companion data, error: %d", errno);
+
+		return -errno;
+	}
+
+	LOG_DBG("Queued companion payload of %d bytes", err);
+
+	return 0;
+}
+
 static int sock_send_gnss_data(struct ntn_state_object *state)
 {
 	int err;
@@ -1259,15 +1304,25 @@ static void try_send_gnss_data(struct ntn_state_object *state)
 		return;
 	}
 
-	err = sock_send_gnss_data(state);
-	if (err) {
-		LOG_ERR("Failed to send GNSS data: %d", err);
-		ntn_msg_publish(NTN_SEND_FAILED);
-		return;
+	if (companion_has_pending()) {
+		err = sock_send_companion_image(state);
+		if (err) {
+			LOG_ERR("Failed to send companion image: %d", err);
+			ntn_msg_publish(NTN_SEND_FAILED);
+			return;
+		}
+		LOG_INF("Companion image queued, waiting for network ack");
+	} else {
+		err = sock_send_gnss_data(state);
+		if (err) {
+			LOG_ERR("Failed to send GNSS data: %d", err);
+			ntn_msg_publish(NTN_SEND_FAILED);
+			return;
+		}
+		LOG_INF("GNSS data queued, waiting for network ack");
 	}
 
 	k_timer_stop(&state->network_connection_timer);
-	LOG_INF("GNSS data queued, waiting for network ack");
 }
 
 /* State handlers */
@@ -1489,6 +1544,9 @@ static enum smf_state_result state_gnss_run(void *obj)
 
 		case GNSS_TIMEOUT:
 			LOG_ERR("GNSS search timed out, going to idle state");
+			if (companion_has_pending()) {
+				companion_clear_upload_busy();
+			}
 			smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
 
 			return SMF_EVENT_HANDLED;
@@ -1678,8 +1736,19 @@ static enum smf_state_result state_ntn_run(void *obj)
 				return SMF_EVENT_HANDLED;
 			}
 
-			__fallthrough;
+			if (companion_has_pending()) {
+				companion_clear_upload_busy();
+			}
+
+			smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
+
+			return SMF_EVENT_HANDLED;
+
 		case NTN_NETWORK_CONNECTION_FAILED:
+			if (companion_has_pending()) {
+				companion_clear_upload_busy();
+			}
+
 			smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
 
 			return SMF_EVENT_HANDLED;
@@ -1707,6 +1776,7 @@ static enum smf_state_result state_ntn_run(void *obj)
 				sock_disable_send_ack(state->sock_fd);
 			}
 
+			companion_clear_pending();
 			smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
 
 			return SMF_EVENT_HANDLED;
@@ -1714,6 +1784,10 @@ static enum smf_state_result state_ntn_run(void *obj)
 		case NTN_SEND_FAILED:
 			if (state->sock_fd >= 0) {
 				sock_disable_send_ack(state->sock_fd);
+			}
+
+			if (companion_has_pending()) {
+				companion_clear_upload_busy();
 			}
 
 			smf_set_state(SMF_CTX(state), &states[STATE_IDLE]);
