@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Nordic Semiconductor ASA
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+
+menuconfig APP_COMPANION
+	bool "Companion UART from nRF54"
+	default y
+	depends on APP_NTN
+	depends on SERIAL
+	help
+	  Receive person-detect thumbnails over UART and trigger NTN upload.
+
+if APP_COMPANION
+
+config APP_COMPANION_THREAD_STACK_SIZE
+	int "Companion thread stack size"
+	default 2048
+
+config APP_COMPANION_THREAD_PRIORITY
+	int "Companion thread priority"
+	default 10
+
+module = APP_COMPANION
+module-str = COMPANION
+source "subsys/logging/Kconfig.template.log_config"
+
+endif
