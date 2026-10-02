@@ -40,9 +40,16 @@ static struct {
 } reasm;
 #endif
 
+#if IS_ENABLED(CONFIG_COMPANION_CHUNKED_NTN)
+#define LAST_WIRE_SLOTS CONFIG_COMPANION_CHUNK_COUNT
+#else
+#define LAST_WIRE_SLOTS 1
+#endif
+
 static K_MUTEX_DEFINE(last_lock);
-static uint8_t last_wire[COMPANION_FRAME_MAX];
-static size_t last_wire_len;
+static uint8_t last_wires[LAST_WIRE_SLOTS][COMPANION_FRAME_MAX];
+static size_t last_wire_lens[LAST_WIRE_SLOTS];
+static uint8_t last_wire_count;
 static bool last_valid;
 static uint32_t last_frame_id;
 static uint16_t last_score_mille;
@@ -146,26 +153,38 @@ static int publish_ntn_trigger(void)
 
 static int store_single_frame(const uint8_t *wire, size_t wire_len)
 {
-	k_mutex_lock(&pending_lock, K_FOREVER);
-	memcpy(pending_wire, wire, wire_len);
-	pending_wire_len = wire_len;
-	pending_valid = true;
+	if (IS_ENABLED(CONFIG_APP_COMPANION_NTN_UPLOAD)) {
+		k_mutex_lock(&pending_lock, K_FOREVER);
+		memcpy(pending_wire, wire, wire_len);
+		pending_wire_len = wire_len;
+		pending_valid = true;
 #if IS_ENABLED(CONFIG_COMPANION_CHUNKED_NTN)
-	ntn_chunk_total = 1;
-	ntn_send_idx = 0;
+		ntn_chunk_total = 1;
+		ntn_send_idx = 0;
 #endif
-	k_mutex_unlock(&pending_lock);
+		k_mutex_unlock(&pending_lock);
+	}
 
 	k_mutex_lock(&last_lock, K_FOREVER);
-	memcpy(last_wire, wire, wire_len);
-	last_wire_len = wire_len;
+	memcpy(last_wires[0], wire, wire_len);
+	last_wire_lens[0] = wire_len;
+	last_wire_count = 1;
 	last_valid = true;
 	last_frame_id = decode_scratch.hdr.frame_id;
 	last_score_mille = decode_scratch.hdr.top_score_mille;
 	k_mutex_unlock(&last_lock);
 
-	atomic_set(&upload_busy, 1);
 	atomic_inc(&rx_frame_ok);
+
+	if (!IS_ENABLED(CONFIG_APP_COMPANION_NTN_UPLOAD)) {
+		LOG_INF("Companion image received: frame %u score %u len %u (NTN upload disabled)",
+			decode_scratch.hdr.frame_id, decode_scratch.hdr.top_score_mille,
+			decode_scratch.hdr.image_len);
+		send_uart_ack();
+		return 0;
+	}
+
+	atomic_set(&upload_busy, 1);
 	LOG_INF("Companion image pending: frame %u score %u len %u",
 		decode_scratch.hdr.frame_id, decode_scratch.hdr.top_score_mille,
 		decode_scratch.hdr.image_len);
@@ -190,7 +209,9 @@ static int store_chunk_frame(const uint8_t *wire, size_t wire_len)
 		reasm.active = true;
 		reasm.frame_id = decode_scratch.hdr.frame_id;
 		reasm.chunk_mask = 0;
-		atomic_set(&upload_busy, 1);
+		if (IS_ENABLED(CONFIG_APP_COMPANION_NTN_UPLOAD)) {
+			atomic_set(&upload_busy, 1);
+		}
 	}
 
 	if ((reasm.chunk_mask & BIT(idx)) != 0U) {
@@ -210,23 +231,34 @@ static int store_chunk_frame(const uint8_t *wire, size_t wire_len)
 		return 0;
 	}
 
-	k_mutex_lock(&pending_lock, K_FOREVER);
-	pending_valid = true;
-	ntn_chunk_total = total;
-	ntn_send_idx = 0;
-	k_mutex_unlock(&pending_lock);
+	if (IS_ENABLED(CONFIG_APP_COMPANION_NTN_UPLOAD)) {
+		k_mutex_lock(&pending_lock, K_FOREVER);
+		pending_valid = true;
+		ntn_chunk_total = total;
+		ntn_send_idx = 0;
+		k_mutex_unlock(&pending_lock);
+	}
 
 	k_mutex_lock(&last_lock, K_FOREVER);
-	memcpy(last_wire, ntn_wires[0], ntn_wire_lens[0]);
-	last_wire_len = ntn_wire_lens[0];
+	for (uint8_t i = 0; i < total; i++) {
+		memcpy(last_wires[i], ntn_wires[i], ntn_wire_lens[i]);
+		last_wire_lens[i] = ntn_wire_lens[i];
+	}
+	last_wire_count = total;
 	last_valid = true;
 	last_frame_id = decode_scratch.hdr.frame_id;
 	last_score_mille = decode_scratch.hdr.top_score_mille;
 	k_mutex_unlock(&last_lock);
 
-	LOG_INF("Companion reassembly complete: frame %u (%u chunks)", reasm.frame_id, total);
+	LOG_INF("Companion reassembly complete: frame %u (%u chunks, score %u)%s", reasm.frame_id,
+		total, decode_scratch.hdr.top_score_mille,
+		IS_ENABLED(CONFIG_APP_COMPANION_NTN_UPLOAD) ? "" : " (NTN upload disabled)");
 	send_uart_ack();
 	reasm_reset();
+
+	if (!IS_ENABLED(CONFIG_APP_COMPANION_NTN_UPLOAD)) {
+		return 0;
+	}
 
 	return publish_ntn_trigger();
 }
@@ -521,27 +553,82 @@ int companion_last_info(uint32_t *frame_id, uint16_t *score_mille, size_t *wire_
 
 	*frame_id = last_frame_id;
 	*score_mille = last_score_mille;
-	*wire_len = last_wire_len;
+	*wire_len = 0;
+	for (uint8_t i = 0; i < last_wire_count; i++) {
+		*wire_len += last_wire_lens[i];
+	}
 	k_mutex_unlock(&last_lock);
 
 	return 0;
 }
 
-int companion_copy_last_wire(uint8_t *buf, size_t buf_cap, size_t *out_len)
+size_t companion_last_wire_count(void)
+{
+	size_t count;
+
+	k_mutex_lock(&last_lock, K_FOREVER);
+	count = last_valid ? last_wire_count : 0;
+	k_mutex_unlock(&last_lock);
+
+	return count;
+}
+
+int companion_copy_last_wire(size_t idx, uint8_t *buf, size_t buf_cap, size_t *out_len)
 {
 	if (buf == NULL || out_len == NULL) {
 		return -EINVAL;
 	}
 
 	k_mutex_lock(&last_lock, K_FOREVER);
-	if (!last_valid || last_wire_len > buf_cap) {
+	if (!last_valid || idx >= last_wire_count) {
 		k_mutex_unlock(&last_lock);
-		return last_valid ? -ENOSPC : -ENOENT;
+		return -ENOENT;
+	}
+	if (last_wire_lens[idx] > buf_cap) {
+		k_mutex_unlock(&last_lock);
+		return -ENOSPC;
 	}
 
-	memcpy(buf, last_wire, last_wire_len);
-	*out_len = last_wire_len;
+	memcpy(buf, last_wires[idx], last_wire_lens[idx]);
+	*out_len = last_wire_lens[idx];
 	k_mutex_unlock(&last_lock);
+
+	return 0;
+}
+
+int companion_copy_last_image(uint8_t *buf, size_t buf_cap, size_t *out_len, uint16_t *width,
+			      uint16_t *height)
+{
+	struct companion_header hdr = {0};
+	size_t total = 0;
+
+	if (buf == NULL || out_len == NULL || width == NULL || height == NULL) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&last_lock, K_FOREVER);
+	if (!last_valid) {
+		k_mutex_unlock(&last_lock);
+		return -ENOENT;
+	}
+
+	/* Chunks are stored at their chunk index, so concatenation restores row order. */
+	for (uint8_t i = 0; i < last_wire_count; i++) {
+		memcpy(&hdr, last_wires[i], sizeof(hdr));
+
+		if (total + hdr.image_len > buf_cap) {
+			k_mutex_unlock(&last_lock);
+			return -ENOSPC;
+		}
+
+		memcpy(buf + total, last_wires[i] + COMPANION_HEADER_SIZE, hdr.image_len);
+		total += hdr.image_len;
+	}
+	k_mutex_unlock(&last_lock);
+
+	*out_len = total;
+	*width = hdr.thumb_w;
+	*height = hdr.thumb_h;
 
 	return 0;
 }
@@ -613,11 +700,29 @@ int companion_last_info(uint32_t *frame_id, uint16_t *score_mille, size_t *wire_
 	return -ENOTSUP;
 }
 
-int companion_copy_last_wire(uint8_t *buf, size_t buf_cap, size_t *out_len)
+size_t companion_last_wire_count(void)
+{
+	return 0;
+}
+
+int companion_copy_last_wire(size_t idx, uint8_t *buf, size_t buf_cap, size_t *out_len)
+{
+	ARG_UNUSED(idx);
+	ARG_UNUSED(buf);
+	ARG_UNUSED(buf_cap);
+	ARG_UNUSED(out_len);
+
+	return -ENOTSUP;
+}
+
+int companion_copy_last_image(uint8_t *buf, size_t buf_cap, size_t *out_len, uint16_t *width,
+			      uint16_t *height)
 {
 	ARG_UNUSED(buf);
 	ARG_UNUSED(buf_cap);
 	ARG_UNUSED(out_len);
+	ARG_UNUSED(width);
+	ARG_UNUSED(height);
 
 	return -ENOTSUP;
 }

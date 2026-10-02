@@ -30,6 +30,15 @@ config APP_COMPANION_SHELL
 	default y
 	depends on SHELL
 
+config APP_COMPANION_NTN_UPLOAD
+	bool "Upload received frames over NTN"
+	default y
+	help
+	  Trigger an NTN upload for every complete frame from the nRF54.
+	  Disable for UART-only bench tests without satellite coverage: frames
+	  are still received, acknowledged and kept for att_companion dump/show,
+	  and each new frame replaces the previous one.
+
 module = APP_COMPANION
 module-str = COMPANION
 source "subsys/logging/Kconfig.template.log_config"
