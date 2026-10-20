@@ -94,6 +94,8 @@ FAKE_VALUE_FUNC(int, nrf_cloud_client_id_get, char *, size_t);
 FAKE_VALUE_FUNC(int, nrf_cloud_coap_init);
 FAKE_VALUE_FUNC(int, nrf_cloud_coap_connect, const char * const);
 FAKE_VALUE_FUNC(int, nrf_cloud_coap_disconnect);
+FAKE_VALUE_FUNC(int, nrf_cloud_coap_pause);
+FAKE_VALUE_FUNC(int, nrf_cloud_coap_resume);
 FAKE_VALUE_FUNC(int, nrf_cloud_coap_shadow_configured_info_update, const char * const);
 FAKE_VALUE_FUNC(int, nrf_cloud_coap_shadow_network_info_update);
 FAKE_VALUE_FUNC(int, nrf_cloud_coap_shadow_device_status_update,
@@ -448,6 +450,8 @@ void setUp(void)
 	RESET_FAKE(nrf_cloud_coap_init);
 	RESET_FAKE(nrf_cloud_coap_connect);
 	RESET_FAKE(nrf_cloud_coap_disconnect);
+	RESET_FAKE(nrf_cloud_coap_pause);
+	RESET_FAKE(nrf_cloud_coap_resume);
 	RESET_FAKE(nrf_cloud_coap_shadow_network_info_update);
 	RESET_FAKE(nrf_cloud_coap_shadow_device_status_update);
 	RESET_FAKE(nrf_cloud_coap_json_message_send);
