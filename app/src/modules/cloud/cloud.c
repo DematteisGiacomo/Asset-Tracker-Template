@@ -1336,6 +1336,11 @@ static void state_connected_paused_entry(void *obj)
 
 	LOG_DBG("%s", __func__);
 
+	err = nrf_cloud_coap_pause();
+	if (err) {
+		LOG_WRN("nrf_cloud_coap_pause, error: %d", err);
+	}
+
 	err = zbus_chan_pub(&cloud_chan, &cloud_msg, PUB_TIMEOUT);
 	if (err) {
 		LOG_ERR("zbus_chan_pub, error: %d", err);
@@ -1353,6 +1358,15 @@ static enum smf_state_result state_connected_paused_run(void *obj)
 		const struct network_msg *msg = (const struct network_msg *)state_object->msg_buf;
 
 		if (msg->type == NETWORK_CONNECTED) {
+			int err = nrf_cloud_coap_resume();
+
+			if (err && (err != -EACCES)) {
+				LOG_WRN("nrf_cloud_coap_resume, error: %d, reconnecting", err);
+				smf_set_state(SMF_CTX(state_object), &states[STATE_CONNECTING]);
+
+				return SMF_EVENT_HANDLED;
+			}
+
 			smf_set_state(SMF_CTX(state_object), &states[STATE_CONNECTED_READY]);
 
 			return SMF_EVENT_HANDLED;
